@@ -1,0 +1,79 @@
+#!/bin/bash
+
+# --- Configuration ---
+# The root directory containing all your docker-compose stack folders.
+STACKS_DIR="/opt/stacks"
+# Directory where log files will be stored.
+LOG_DIR="/var/log/docker-updates"
+# --- End Configuration ---
+
+# Ensure log directory exists
+mkdir -p "$LOG_DIR"
+
+# --- Main Script ---
+echo "=================================================="
+echo "Starting Docker stacks update on $(date)"
+echo "Targeting RUNNING services only."
+echo "=================================================="
+
+# Check if the stacks directory exists
+if [ ! -d "$STACKS_DIR" ]; then
+  echo "❌ Error: Stacks directory not found at $STACKS_DIR"
+  exit 1
+fi
+
+# Loop through each subdirectory in the STACKS_DIR
+for stack_dir in "$STACKS_DIR"/*/; do
+  # Check for any common compose file names.
+  if [ -f "${stack_dir}compose.yml" ] || [ -f "${stack_dir}compose.yaml" ] || [ -f "${stack_dir}docker-compose.yml" ] || [ -f "${stack_dir}docker-compose.yaml" ]; then
+    
+    stack_name=$(basename "$stack_dir")
+    echo
+    echo "🚀 Processing stack: $stack_name"
+    echo "---------------------------------"
+
+    # Navigate into the stack's directory
+    cd "$stack_dir" || exit
+    
+    # --- NEW LOGIC START ---
+    # Get a list of currently running services for this stack.
+    running_services=$(docker compose ps --services --filter "status=running")
+    
+    # Check if there are any running services.
+    if [ -z "$running_services" ]; then
+      echo "  STATUS: No running services found. Skipping update."
+      continue # Move to the next stack directory
+    fi
+    
+    echo "  Found running services: $running_services"
+    
+    # Pull the latest images for ONLY the running services.
+    echo "  Pulling latest images..."
+    docker compose pull $running_services
+    
+    # Bring ONLY the running services up and capture the output.
+    # This will recreate them if their image changed but will not start any stopped services.
+    echo "  Checking for updates..."
+    update_output=$(docker compose up -d $running_services)
+    # --- NEW LOGIC END ---
+    
+    # Check the captured output for keywords that indicate a change.
+    if echo "$update_output" | grep -qE "recreated|creating|started"; then
+      echo "$update_output"
+      echo "✅ STATUS: Services for $stack_name were updated."
+    else
+      echo "  STATUS: No changes detected. All services are up-to-date."
+    fi
+
+  else
+    echo "⚠️  Skipping $(basename "$stack_dir") - no compose file found."
+  fi
+done
+
+echo
+echo "=================================================="
+echo "🧹 Pruning old, unused Docker images..."
+docker image prune -f
+echo "🎉 All stacks processed successfully!"
+echo "Log file for this run is available in $LOG_DIR"
+echo "=================================================="
